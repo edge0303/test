@@ -47,7 +47,9 @@ export function normalizeEmail(raw: string): string {
   return (raw || '').trim().toLowerCase();
 }
 export function isValidEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) && email.length <= 254;
+  // 길이 검사를 정규식보다 먼저 한다. 순서가 반대면 긴 입력이 정규식에 그대로 들어간다.
+  if (email.length > 254) return false;
+  return /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,60}$/.test(email);
 }
 
 function adminEmails(): Set<string> {

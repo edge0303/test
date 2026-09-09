@@ -15,7 +15,8 @@ import type { DraftSection, JudgeResult, CriterionScore, RubricCheck, SectionKey
 export const PASS_LINE = 80;   // 통과 예상선 (사용자에게 보여주는 기준)
 export const TARGET_SCORE = 85; // 재작성 루프 목표점
 
-const NUM_WITH_UNIT = /\d[\d,.]*\s*(억원|천만원|백만원|만원|원|%|퍼센트|명|건|개|년|개월|배)/;
+// 수량자 상한에 대한 근거는 verifier.ts 의 주석 참조 (ReDoS 방지)
+const NUM_WITH_UNIT = /\d[\d,.]{0,19}\s{0,4}(억원|천만원|백만원|만원|원|%|퍼센트|명|건|개|년|개월|배)/;
 
 interface CheckDef {
   id: string;
@@ -48,7 +49,7 @@ const CHECKS: Record<SectionKey, { label: string; max: number; checks: CheckDef[
         id: 'p_source',
         label: '시장 데이터의 출처가 표기되어 있는가',
         weight: 5,
-        test: (t) => /출처\s*[:：]/.test(t),
+        test: (t) => /출처\s{0,4}[:：]/.test(t),
         fix: '시장 규모·성장률 등 외부 인용 수치마다 "출처: 기관명, 발행연도" 를 문장 끝에 표기하시오. 출처를 댈 수 없으면 그 문장을 삭제하시오.',
       },
       {

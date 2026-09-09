@@ -215,7 +215,8 @@ export function mapBizinfoItem(item: Record<string, unknown>): IncomingProgram |
 export function deriveRulesFromTarget(target: string): IncomingProgram['rules'] {
   const rules: IncomingProgram['rules'] = [];
 
-  const years = target.match(/창업\s*(\d+)\s*년\s*(이내|미만)/);
+  // 외부에서 받은 문자열이므로 여기서도 수량자에 상한을 둔다.
+  const years = target.match(/창업\s{0,4}(\d{1,3})\s{0,4}년\s{0,4}(이내|미만)/);
   if (years) {
     rules.push({
       label: `업력 ${years[1]}년 이내`,
@@ -228,7 +229,7 @@ export function deriveRulesFromTarget(target: string): IncomingProgram['rules'] 
     });
   }
 
-  const emp = target.match(/상시\s*근로자\s*(\d+)\s*[인명]\s*(이하|미만|이상)/);
+  const emp = target.match(/상시\s{0,4}근로자\s{0,4}(\d{1,6})\s{0,4}[인명]\s{0,4}(이하|미만|이상)/);
   if (emp) {
     rules.push({
       label: `상시근로자 ${emp[1]}인 ${emp[2]}`,

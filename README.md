@@ -33,7 +33,8 @@ npm run dev               # http://localhost:3000
 | `npm run dev` / `build` / `start` | 개발 서버 / 빌드 / 프로덕션 서버 |
 | `npm run seed` | 샘플 공고 28건 적재 (D-day는 실행일 기준으로 자동 계산) |
 | `npm run ingest` | 기업마당 실데이터 수집 (`BIZINFO_API_KEY` 필요) |
-| `npm run smoke` | UI 없이 엔진 전체를 검증하는 스모크 테스트 |
+| `npm run smoke` | UI 없이 엔진 전체를 검증하는 스모크 테스트 (ReDoS 회귀 방지 포함) |
+| `npm run bench:redos` | 채점·팩트체크가 입력 크기에 대해 선형인지 측정 |
 | `npm run typecheck` | 타입 검사 |
 
 ---
@@ -192,7 +193,7 @@ API 응답 형태가 바뀌면 `npm run ingest` 가 **조용히 실패하지 않
 ## 운영 전 반드시 처리할 것
 
 - [x] 로그인·세션, 소유권 검증, 관리자 분리, CSRF, 의존성 상향 (P0 — 조치 완료)
-- [ ] **ReDoS 대응** — 채점 정규식 상계 + 채점을 요청 스레드 밖으로 (가장 시급)
+- [x] ReDoS 대응 — 정규식 수량자 상한 (14.5초 → 21ms, 선형화)
 - [ ] 요청 본문 크기 제한 (리버스 프록시 단) + 사용자당 생성 횟수 제한
 - [ ] 보안 헤더 (CSP / X-Frame-Options / HSTS)
 - [ ] SQLite → PostgreSQL 이관 (다중 사용자·동시성)

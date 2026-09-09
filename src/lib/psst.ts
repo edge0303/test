@@ -32,7 +32,8 @@ export function buildFactSlots(c: Company, p: Program): FactSlot[] {
   ];
 }
 
-const SLOT_RE = /\{\{fact:([a-z_]+)\}\}/g;
+// 닫는 괄호가 없는 긴 입력에서 이차 시간이 되지 않도록 상한을 둔다.
+const SLOT_RE = /\{\{fact:([a-z_]{1,40})\}\}/g;
 
 export function renderSlots(text: string, slots: FactSlot[]): string {
   const map = new Map(slots.map((s) => [s.key, s]));

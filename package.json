@@ -9,7 +9,8 @@
     "ingest": "tsx scripts/ingest.ts",
     "seed": "tsx scripts/seed.ts",
     "typecheck": "tsc --noEmit",
-    "smoke": "DB_PATH=data/smoke.db tsx scripts/smoke.ts"
+    "smoke": "DB_PATH=data/smoke.db tsx scripts/smoke.ts",
+    "bench:redos": "tsx scripts/bench-redos.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

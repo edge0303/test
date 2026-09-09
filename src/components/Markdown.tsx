@@ -8,7 +8,8 @@ import React from 'react';
 
 function inline(text: string, keyBase: string): React.ReactNode[] {
   const parts: React.ReactNode[] = [];
-  const re = /(\[확인 필요:[^\]]+\])|(\*\*[^*]+\*\*)/g;
+  // 닫는 기호가 없는 본문에서 이차 시간이 되지 않도록 상한을 둔다.
+  const re = /(\[확인 필요:[^\]]{1,200}\])|(\*\*[^*]{1,200}\*\*)/g;
   let last = 0;
   let m: RegExpExecArray | null;
   let i = 0;

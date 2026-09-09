@@ -4,6 +4,9 @@ import { upsertCompany, getCompanyOwned, matchAll, getProgram } from '../src/lib
 import { getDb, resetDb } from '../src/lib/db';
 import { computeCompleteness } from '../src/lib/profile';
 import { generateApplication, loadApplicationView } from '../src/lib/pipeline';
+import { judgeDeterministic } from '../src/lib/judge';
+import { verify } from '../src/lib/verifier';
+import type { DraftSection, FactSlot } from '../src/lib/types';
 import { isValidBizNo, bizNoKind } from '../src/lib/bizno';
 
 function assert(cond: unknown, msg: string) {
@@ -86,6 +89,40 @@ async function main() {
   console.log(`  미해결 [확인 필요] ${view.report.unresolvedMarkers.length}건, 대조불가 수치 ${view.report.unverifiedNumbers.length}건, 검증됨 ${view.report.verifiedCount}건`);
   assert(view.report.unresolvedMarkers.length > 0, '값이 없는 슬롯은 확인 필요로 남음 (환각 대신 공백)');
   assert(view.report.unverifiedNumbers.length === 0, '지어낸 수치가 없음');
+
+  console.log('\n[7] ReDoS 회귀 방지');
+  const mkSections = (payload: string): DraftSection[] => ([
+    { key: 'problem', title: 'P', content: payload },
+    { key: 'solution', title: 'S', content: 'x' },
+    { key: 'scaleup', title: 'S', content: 'x' },
+    { key: 'team', title: 'T', content: 'x' },
+  ]);
+  const dummySlots: FactSlot[] = [{ key: 'revenue', label: '매출', value: '5억 ~ 10억', source: 'profile' }];
+
+  for (const [label, payload] of [
+    ['단위 없는 긴 숫자열', '1'.repeat(120_000)],
+    ['닫히지 않은 확인필요 마커', '[확인 필요:'.repeat(15_000)],
+    ['닫히지 않은 강조 표기', '**'.repeat(60_000)],
+  ] as const) {
+    const secs = mkSections(payload);
+    const t0 = Date.now();
+    judgeDeterministic(secs);
+    verify(secs, dummySlots);
+    const ms = Date.now() - t0;
+    assert(ms < 1000, `${label} 120KB → ${ms}ms (1초 미만이어야 함)`);
+  }
+
+  // 상한을 두면서 정상 수치 인식이 깨지지 않았는지 확인한다
+  const real = mkSections('직전연도 매출 5억 ~ 10억, 상시근로자 12명, 불량률 2.5%, 지원 한도 3,000만원');
+  const rep = verify(real, [
+    { key: 'revenue', label: '매출', value: '5억 ~ 10억', source: 'profile' },
+    { key: 'emp', label: '근로자', value: '12명', source: 'profile' },
+  ]);
+  // '12명' 만 검증된다. '5억'·'10억' 은 단위 목록에 '억원' 은 있어도 '억' 단독이 없어
+  // 애초에 스캔 대상이 아니다. ReDoS 수정과 무관한 기존 한계이며 별도 과제로 남긴다.
+  assert(rep.verifiedCount === 1, `프로파일과 일치하는 수치 검증됨 (${rep.verifiedCount}건: 12명)`);
+  assert(rep.unverifiedNumbers.length === 2,
+    `근거 없는 수치 2건 적발 (${rep.unverifiedNumbers.length}건: 2.5%, 3,000만원)`);
 
   console.log('\n완료.');
 }
