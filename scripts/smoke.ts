@@ -1,6 +1,7 @@
 /** 엔진 스모크 테스트 — UI 없이 전체 파이프라인을 검증한다. */
 import { loadSeed } from '../src/lib/ingest';
-import { upsertCompany, getCompany, matchAll, getProgram } from '../src/lib/repo';
+import { upsertCompany, getCompanyOwned, matchAll, getProgram } from '../src/lib/repo';
+import { getDb, resetDb } from '../src/lib/db';
 import { computeCompleteness } from '../src/lib/profile';
 import { generateApplication, loadApplicationView } from '../src/lib/pipeline';
 import { isValidBizNo, bizNoKind } from '../src/lib/bizno';
@@ -10,6 +11,9 @@ function assert(cond: unknown, msg: string) {
 }
 
 async function main() {
+  // 개발용 DB와 섞이지 않도록 전용 DB에서 처음부터 만든다 (npm script 가 DB_PATH 를 지정).
+  resetDb();
+
   console.log('\n[1] 사업자번호 검증');
   assert(isValidBizNo('220-81-62517') === true, '유효한 번호 통과 (220-81-62517)');
   assert(isValidBizNo('123-45-67890') === false, '체크섬 불일치 번호 거부 (123-45-67890)');
@@ -30,9 +34,15 @@ async function main() {
     is_woman_owned: 0, is_disabled_owned: 0, is_social_enterprise: 0,
     is_venture_certified: 0, has_research_institute: 0,
   };
-  const id = upsertCompany({ ...profile, profile_completeness: computeCompleteness(profile) });
-  const company = getCompany(id)!;
+  // 소유자 없이 기업을 만들 수 없다. 스모크용 사용자를 하나 만들어 붙인다.
+  const uid = Number((getDb().prepare(
+    "INSERT INTO users (email, role) VALUES ('smoke@example.com','user') ON CONFLICT(email) DO UPDATE SET role='user' RETURNING id",
+  ).get() as { id: number }).id);
+  const id = upsertCompany({ ...profile, profile_completeness: computeCompleteness(profile) }, uid);
+  const company = getCompanyOwned(id, uid)!;
   assert(company.profile_completeness === 100, `프로파일 완성도 ${company.profile_completeness}%`);
+  assert(company.user_id === uid, '기업에 소유자가 지정됨');
+  assert(getCompanyOwned(id, uid + 999) === null, '다른 사용자로는 조회되지 않음 (소유권 검증)');
 
   console.log('\n[4] 매칭 (3단계 분류)');
   const matches = matchAll(company);

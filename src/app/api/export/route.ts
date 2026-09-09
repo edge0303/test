@@ -1,4 +1,5 @@
-import { getApplication, getCompany, getProgram } from '@/lib/repo';
+import { getApplicationOwned, getCompanyOwned, getProgram } from '@/lib/repo';
+import { getSession } from '@/lib/auth';
 import { loadApplicationView } from '@/lib/pipeline';
 import { formatKRW } from '@/lib/profile';
 import { formatBizNo } from '@/lib/bizno';
@@ -7,14 +8,18 @@ export const dynamic = 'force-dynamic';
 
 /** 지원서를 마크다운으로 내보낸다. 사용자가 공고 지정 양식에 붙여넣는 것을 전제로 한다. */
 export async function GET(req: Request) {
+  // 읽기 전용이라 CSRF 검사는 하지 않지만, 인증과 소유권은 반드시 확인한다.
+  const session = await getSession();
+  if (!session) return new Response('로그인이 필요합니다.', { status: 401 });
+
   const url = new URL(req.url);
   const applicationId = Number(url.searchParams.get('applicationId'));
-  const app = getApplication(applicationId);
-  if (!app) return new Response('지원서를 찾을 수 없습니다.', { status: 404 });
+  const app = getApplicationOwned(applicationId, session.user.id);
+  if (!app) return new Response('찾을 수 없습니다.', { status: 404 });
 
-  const company = getCompany(app.company_id)!;
+  const company = getCompanyOwned(app.company_id, session.user.id)!;
   const program = getProgram(app.program_id)!;
-  const view = loadApplicationView(applicationId, company, program);
+  const view = loadApplicationView(app.id, company, program);
 
   const md = [
     `# ${program.title} — 사업계획서 초안`,

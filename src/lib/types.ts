@@ -14,6 +14,8 @@ export interface Interval {
 
 export interface Company {
   id: number;
+  /** 소유자. NULL 은 인증 도입 이전 데이터이며 어떤 사용자도 접근할 수 없다. */
+  user_id: number | null;
   biz_no: string;
   name: string;
   status: string | null; // 계속사업자 / 휴업자 / 폐업자 / null(미확인)

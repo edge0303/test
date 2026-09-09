@@ -5,7 +5,8 @@ import Calendar from '@/components/Calendar';
 import GenerateButton from '@/components/GenerateButton';
 import InterestButton from '@/components/InterestButton';
 import { VerdictBadge, DdayBadge, ddayClass, ResultIcon, FundTypeBadge } from '@/components/ui';
-import { getCompany, listCompanies, matchAll, interestIds, dataSourceInfo } from '@/lib/repo';
+import { getCompanyForUser, getCompanyOwned, matchAll, interestIds, dataSourceInfo } from '@/lib/repo';
+import { requireSession } from '@/lib/auth';
 import { actionCards } from '@/lib/matcher';
 import { formatKRW } from '@/lib/profile';
 import type { MatchResult, Verdict } from '@/lib/types';
@@ -15,11 +16,13 @@ export const dynamic = 'force-dynamic';
 export default async function Dashboard({
   searchParams,
 }: { searchParams: Promise<{ c?: string }> }) {
+  const session = await requireSession();
   const params = await searchParams;
-  const companies = listCompanies();
-  if (companies.length === 0) redirect('/onboard');
 
-  const company = getCompany(Number(params.c)) ?? companies[0];
+  // ?c= 는 식별자일 뿐 자격증명이 아니다. 반드시 소유권을 확인한 뒤에만 쓴다.
+  const requested = params.c ? getCompanyOwned(Number(params.c), session.user.id) : null;
+  const company = requested ?? getCompanyForUser(session.user.id);
+  if (!company) redirect('/onboard');
   const matches = matchAll(company);
   const interests = interestIds(company.id);
   const sources = dataSourceInfo();
@@ -46,7 +49,7 @@ export default async function Dashboard({
 
   return (
     <>
-      <TopBar company={company} />
+      <TopBar company={company} session={session} />
       <div className="wrap">
 
         {!sources.hasLive && (

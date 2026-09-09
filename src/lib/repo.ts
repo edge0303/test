@@ -4,21 +4,57 @@ import type {
 } from './types';
 import { matchOne, sortMatches } from './matcher';
 
-export function getCompany(id: number): Company | null {
+/**
+ * 소유권 규칙
+ * ─────────────────────────────────────────────────────────────
+ * 모든 조회·수정은 "그 자원이 이 사용자의 것인가"를 먼저 확인한다.
+ * 소유자가 아니면 403이 아니라 null 을 돌려준다 — 자원의 존재 여부까지 숨기기 위함이다.
+ * user_id 가 NULL 인 행(인증 도입 이전 데이터)은 누구의 것도 아니므로 항상 접근 불가다.
+ */
+
+/** 소유권 검증 없는 원본 조회. 내부에서만 쓰고 라우트에서 직접 부르지 않는다. */
+function getCompanyRaw(id: number): Company | null {
   return (getDb().prepare('SELECT * FROM companies WHERE id = ?').get(id) as Company) ?? null;
+}
+
+export function getCompanyOwned(id: number, userId: number): Company | null {
+  const c = getCompanyRaw(id);
+  if (!c || c.user_id !== userId) return null;
+  return c;
+}
+
+/** 이 사용자의 기업. 여러 개면 가장 최근에 수정한 것. */
+export function getCompanyForUser(userId: number): Company | null {
+  return (getDb()
+    .prepare('SELECT * FROM companies WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1')
+    .get(userId) as Company) ?? null;
+}
+
+export function listCompaniesForUser(userId: number): Company[] {
+  return getDb()
+    .prepare('SELECT * FROM companies WHERE user_id = ? ORDER BY updated_at DESC')
+    .all(userId) as Company[];
 }
 
 export function getCompanyByBizNo(bizNo: string): Company | null {
   return (getDb().prepare('SELECT * FROM companies WHERE biz_no = ?').get(bizNo) as Company) ?? null;
 }
 
-export function listCompanies(): Company[] {
-  return getDb().prepare('SELECT * FROM companies ORDER BY updated_at DESC').all() as Company[];
-}
+export class OwnershipError extends Error {}
 
-export function upsertCompany(c: Partial<Company> & { biz_no: string; name: string }): number {
+/**
+ * biz_no 는 전역 UNIQUE 다. 소유자 확인 없이 upsert 하면
+ * 남의 사업자번호를 입력해 그 회사 프로파일을 덮어쓸 수 있다. 그래서 여기서 막는다.
+ */
+export function upsertCompany(
+  c: Partial<Company> & { biz_no: string; name: string },
+  userId: number,
+): number {
   const db = getDb();
   const existing = getCompanyByBizNo(c.biz_no);
+  if (existing && existing.user_id !== userId) {
+    throw new OwnershipError('이미 다른 계정에 등록된 사업자등록번호입니다.');
+  }
   const cols = [
     'name', 'status', 'tax_type', 'industry_code', 'industry_name', 'region_sido', 'region_sigungu',
     'founded_at', 'employee_band', 'revenue_band', 'is_woman_owned', 'is_disabled_owned',
@@ -33,9 +69,9 @@ export function upsertCompany(c: Partial<Company> & { biz_no: string; name: stri
     return existing.id;
   }
   const info = db.prepare(
-    `INSERT INTO companies (biz_no, ${cols.join(', ')})
-     VALUES (@biz_no, ${cols.map((k) => '@' + k).join(', ')})`,
-  ).run({ ...defaults(c), biz_no: c.biz_no });
+    `INSERT INTO companies (biz_no, user_id, ${cols.join(', ')})
+     VALUES (@biz_no, @user_id, ${cols.map((k) => '@' + k).join(', ')})`,
+  ).run({ ...defaults(c), biz_no: c.biz_no, user_id: userId });
   return Number(info.lastInsertRowid);
 }
 
@@ -140,8 +176,21 @@ export function findApplication(companyId: number, programId: number): Applicati
     .get(companyId, programId) as ApplicationRow) ?? null;
 }
 
-export function getApplication(id: number): ApplicationRow | null {
+function getApplicationRaw(id: number): ApplicationRow | null {
   return (getDb().prepare('SELECT * FROM applications WHERE id = ?').get(id) as ApplicationRow) ?? null;
+}
+
+/** 지원서 → 기업 → 소유자 순으로 따라가 확인한다. 남의 지원서는 없는 것으로 취급한다. */
+export function getApplicationOwned(id: number, userId: number): ApplicationRow | null {
+  const app = getApplicationRaw(id);
+  if (!app) return null;
+  const company = getCompanyOwned(app.company_id, userId);
+  return company ? app : null;
+}
+
+/** 관리자 화면 전용 — 소유권을 넘어 조회한다. 반드시 관리자 가드 뒤에서만 호출할 것. */
+export function getApplicationAsAdmin(id: number): ApplicationRow | null {
+  return getApplicationRaw(id);
 }
 
 export function createApplication(companyId: number, programId: number, engine: string): number {

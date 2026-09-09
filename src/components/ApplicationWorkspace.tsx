@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Markdown from './Markdown';
+import { postJson } from '@/lib/client';
 import type { JudgeResult, SectionKey } from '@/lib/types';
 import type { VerifyReport } from '@/lib/verifier';
 
@@ -33,12 +34,8 @@ export default function ApplicationWorkspace(props: Props) {
   async function save() {
     setBusy('save'); setMsg(null);
     try {
-      const res = await fetch('/api/application/save', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ applicationId: props.applicationId, sections }),
-      });
-      const json = await res.json();
+      const json = await postJson<any>('/api/application/save',
+        { applicationId: props.applicationId, sections });
       if (!json.ok) { setMsg(json.message); return; }
       setJudge(json.judge);
       setReport(json.report);
@@ -50,12 +47,8 @@ export default function ApplicationWorkspace(props: Props) {
   async function regenerate() {
     setBusy('regen'); setMsg(null);
     try {
-      const res = await fetch('/api/application/generate', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ companyId: props.companyId, programId: props.programId, force: true }),
-      });
-      const json = await res.json();
+      const json = await postJson<any>('/api/application/generate',
+        { companyId: props.companyId, programId: props.programId, force: true });
       if (!json.ok) { setMsg(json.message); return; }
       window.location.reload();
     } finally { setBusy(null); }
@@ -64,12 +57,8 @@ export default function ApplicationWorkspace(props: Props) {
   async function requestReview() {
     setBusy('review'); setMsg(null);
     try {
-      const res = await fetch('/api/review/request', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ applicationId: props.applicationId }),
-      });
-      const json = await res.json();
+      const json = await postJson<any>('/api/review/request',
+        { applicationId: props.applicationId });
       if (!json.ok) { setMsg(json.message); return; }
       setReview({ status: 'queued', due: json.dueAt });
       setMsg(`검수 요청이 접수되었습니다. 예상 완료일 ${json.dueAt}`);

@@ -2,6 +2,7 @@ import Link from 'next/link';
 import TopBar from '@/components/TopBar';
 import { listExpertQueue } from '@/lib/repo';
 import { getDb } from '@/lib/db';
+import { requireAdminSession } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,9 +11,12 @@ const STATUS_LABEL: Record<string, string> = { queued: '대기', in_progress: '�
 /**
  * 내부 운영 화면 — 전문가 검수 큐.
  * 초기에는 내부 인력이 직접 검수하고, 그 기록을 학습 자산으로 축적한다. (기획서 16장)
- * 실제 운영 시에는 이 경로에 인증을 반드시 걸어야 한다.
+ * 접근 제어: requireAdminSession() 이 세션과 role='admin' 을 확인하고,
+ * 권한이 없으면 403이 아니라 notFound() 를 던져 화면의 존재 자체를 숨긴다.
+ * 관리자 지정은 ADMIN_EMAILS 환경변수가 진실의 원천이다.
  */
-export default function AdminReviews() {
+export default async function AdminReviews() {
+  const session = await requireAdminSession();
   const queue = listExpertQueue();
   const memos = new Map(
     (getDb().prepare('SELECT id, memo FROM expert_reviews').all() as { id: number; memo: string | null }[])
@@ -27,11 +31,11 @@ export default function AdminReviews() {
 
   return (
     <>
-      <TopBar />
+      <TopBar session={session} />
       <div className="wrap">
         <div className="section-title" style={{ marginTop: 24 }}>
           전문가 검수 큐
-          <small>내부 운영용 · 실제 배포 시 접근 제어 필요</small>
+          <small>관리자 전용 · {session.user.email}</small>
         </div>
 
         <div className="kpis" style={{ marginTop: 0, gridTemplateColumns: 'repeat(3,1fr)' }}>
@@ -70,6 +74,7 @@ export default function AdminReviews() {
                     <td>
                       <form action="/api/admin/review" method="post" style={{ display: 'flex', gap: 4 }}>
                         <input type="hidden" name="id" value={q.id} />
+                        <input type="hidden" name="csrf" value={session.csrf} />
                         <input type="text" name="assignee" placeholder="담당자"
                           defaultValue={q.assignee ?? ''} style={{ width: 80, padding: '4px 6px', fontSize: 12 }} />
                         <select name="status" defaultValue={q.status} style={{ width: 92, padding: '4px 6px', fontSize: 12 }}>

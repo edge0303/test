@@ -1,10 +1,12 @@
 import { redirect } from 'next/navigation';
-import { listCompanies } from '@/lib/repo';
+import { getSession } from '@/lib/auth';
+import { getCompanyForUser } from '@/lib/repo';
 
 export const dynamic = 'force-dynamic';
 
-export default function Home() {
-  const companies = listCompanies();
-  if (companies.length === 0) redirect('/onboard');
-  redirect(`/dashboard?c=${companies[0].id}`);
+export default async function Home() {
+  const session = await getSession();
+  if (!session) redirect('/login');
+  const company = getCompanyForUser(session.user.id);
+  redirect(company ? '/dashboard' : '/onboard');
 }

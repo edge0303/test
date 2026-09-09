@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { postJson } from '@/lib/client';
 
 export default function GenerateButton({
   companyId, programId, label = '지원서 만들기', className = 'btn primary sm', force = false,
@@ -15,12 +16,8 @@ export default function GenerateButton({
   async function run() {
     setBusy(true); setErr(null);
     try {
-      const res = await fetch('/api/application/generate', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ companyId, programId, force }),
-      });
-      const json = await res.json();
+      const json = await postJson<{ ok: boolean; message?: string; applicationId: number }>(
+        '/api/application/generate', { companyId, programId, force });
       if (!json.ok) { setErr(json.message ?? '생성에 실패했습니다.'); return; }
       router.push(`/application/${json.applicationId}`);
     } catch {

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { postJson } from '@/lib/client';
 
 export default function InterestButton({
   companyId, programId, initial,
@@ -11,12 +12,8 @@ export default function InterestButton({
   async function toggle() {
     setBusy(true);
     try {
-      const res = await fetch('/api/interest', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ companyId, programId }),
-      });
-      const json = await res.json();
+      const json = await postJson<{ ok: boolean; interested: boolean }>(
+        '/api/interest', { companyId, programId });
       if (json.ok) setOn(json.interested);
     } finally {
       setBusy(false);

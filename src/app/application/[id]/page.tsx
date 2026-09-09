@@ -3,7 +3,8 @@ import { notFound } from 'next/navigation';
 import TopBar from '@/components/TopBar';
 import ApplicationWorkspace from '@/components/ApplicationWorkspace';
 import { DdayBadge, FundTypeBadge } from '@/components/ui';
-import { getApplication, getCompany, getProgram, getExpertReview } from '@/lib/repo';
+import { getApplicationOwned, getCompanyOwned, getProgram, getExpertReview } from '@/lib/repo';
+import { requireSession } from '@/lib/auth';
 import { loadApplicationView } from '@/lib/pipeline';
 import { SECTION_META } from '@/lib/psst';
 import { ddayOf } from '@/lib/matcher';
@@ -13,11 +14,14 @@ import type { SectionKey } from '@/lib/types';
 export const dynamic = 'force-dynamic';
 
 export default async function ApplicationPage({ params }: { params: Promise<{ id: string }> }) {
+  const session = await requireSession();
   const { id } = await params;
-  const app = getApplication(Number(id));
+
+  // 남의 지원서는 403이 아니라 404로 응답한다 — 존재 여부까지 숨기기 위함이다.
+  const app = getApplicationOwned(Number(id), session.user.id);
   if (!app) notFound();
 
-  const company = getCompany(app.company_id);
+  const company = getCompanyOwned(app.company_id, session.user.id);
   const program = getProgram(app.program_id);
   if (!company || !program) notFound();
 
@@ -28,10 +32,10 @@ export default async function ApplicationPage({ params }: { params: Promise<{ id
 
   return (
     <>
-      <TopBar company={company} />
+      <TopBar company={company} session={session} />
       <div className="wrap">
         <div style={{ margin: '18px 0 6px' }}>
-          <Link href={`/dashboard?c=${company.id}`} style={{ fontSize: 12.5 }}>← 대시보드로</Link>
+          <Link href="/dashboard" style={{ fontSize: 12.5 }}>← 대시보드로</Link>
         </div>
 
         <div className="card" style={{ padding: '16px 18px', marginBottom: 16 }}>

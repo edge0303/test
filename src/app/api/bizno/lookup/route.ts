@@ -2,10 +2,15 @@ import { NextResponse } from 'next/server';
 import { isValidBizNo, normalizeBizNo, formatBizNo, bizNoKind } from '@/lib/bizno';
 import { lookupBizStatus } from '@/lib/nts';
 import { getCompanyByBizNo } from '@/lib/repo';
+import { guardApi, isFail } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
+  // 외부 API를 호출하는 엔드포인트다. 인증 없이 열어두면 조회 쿼터가 소진된다.
+  const guard = await guardApi();
+  if (isFail(guard)) return guard.response;
+
   const { biz_no } = (await req.json()) as { biz_no?: string };
   const digits = normalizeBizNo(biz_no ?? '');
 
@@ -21,6 +26,8 @@ export async function POST(req: Request) {
 
   const nts = await lookupBizStatus(digits);
   const existing = getCompanyByBizNo(digits);
+  // 다른 계정이 이미 등록한 번호인지만 알려주고, 그 회사의 정보는 노출하지 않는다.
+  const takenByOther = Boolean(existing && existing.user_id !== guard.user.id);
 
   return NextResponse.json({
     ok: true,
@@ -28,8 +35,8 @@ export async function POST(req: Request) {
     formatted: formatBizNo(digits),
     kind: bizNoKind(digits),
     nts,
-    existing: existing ? { id: existing.id, name: existing.name } : null,
-    // 하이브리드 온보딩의 핵심: 자동으로 알 수 있는 것과 물어봐야 하는 것을 분리해 알려준다.
+    takenByOther,
+    existing: existing && existing.user_id === guard.user.id ? { id: existing.id, name: existing.name } : null,
     autoFilled: [
       { label: '번호 유효성', value: '검증 완료' },
       { label: '사업자 구분', value: bizNoKind(digits) ?? '미상' },

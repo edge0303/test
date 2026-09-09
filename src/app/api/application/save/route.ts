@@ -1,36 +1,52 @@
 import { NextResponse } from 'next/server';
-import { getApplication, getCompany, getProgram, latestSections, saveSections, saveScore } from '@/lib/repo';
+import {
+  getApplicationOwned, getCompanyOwned, getProgram, latestSections, saveSections, saveScore,
+} from '@/lib/repo';
 import { judgeDeterministic } from '@/lib/judge';
 import { SECTION_META, buildFactSlots } from '@/lib/psst';
 import { verify } from '@/lib/verifier';
+import { guardApi, isFail } from '@/lib/auth';
 import type { DraftSection, SectionKey } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
-/** 사용자가 직접 고친 본문을 저장하고 즉시 재채점한다. 편집 효과를 바로 보여주기 위함이다. */
+const MAX_SECTION_CHARS = 20_000;
+
 export async function POST(req: Request) {
+  const guard = await guardApi();
+  if (isFail(guard)) return guard.response;
+
   const { applicationId, sections } = (await req.json()) as {
     applicationId: number;
     sections: Record<SectionKey, string>;
   };
-  const app = getApplication(applicationId);
-  if (!app) return NextResponse.json({ ok: false, message: '지원서를 찾을 수 없습니다.' }, { status: 404 });
+  const app = getApplicationOwned(Number(applicationId), guard.user.id);
+  if (!app) return NextResponse.json({ ok: false, message: '찾을 수 없습니다.' }, { status: 404 });
 
-  const company = getCompany(app.company_id)!;
+  for (const [key, value] of Object.entries(sections ?? {})) {
+    if (typeof value === 'string' && value.length > MAX_SECTION_CHARS) {
+      return NextResponse.json(
+        { ok: false, message: `섹션 하나는 ${MAX_SECTION_CHARS.toLocaleString()}자를 넘을 수 없습니다. (${key})` },
+        { status: 413 },
+      );
+    }
+  }
+
+  const company = getCompanyOwned(app.company_id, guard.user.id)!;
   const program = getProgram(app.program_id)!;
-  const current = latestSections(applicationId);
+  const current = latestSections(app.id);
   const version = Math.max(1, ...current.map((c) => c.version)) + 1;
 
   const next: DraftSection[] = SECTION_META.map((m) => ({
     key: m.key,
     title: m.title,
-    content: sections[m.key] ?? current.find((c) => c.key === m.key)?.content ?? '',
+    content: sections?.[m.key] ?? current.find((c) => c.key === m.key)?.content ?? '',
   }));
 
-  saveSections(applicationId, next, version);
+  saveSections(app.id, next, version);
   const judge = judgeDeterministic(next);
   judge.engine = app.engine as 'deterministic' | 'deterministic+llm';
-  saveScore(applicationId, version, judge);
+  saveScore(app.id, version, judge);
 
   const report = verify(next, buildFactSlots(company, program));
   return NextResponse.json({ ok: true, judge, report, version });

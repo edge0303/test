@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
-import { getApplication, getCompany, getProgram, requestExpertReview } from '@/lib/repo';
+import { getApplicationOwned, getCompanyOwned, getProgram, requestExpertReview } from '@/lib/repo';
 import { loadApplicationView } from '@/lib/pipeline';
+import { guardApi, isFail } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,13 +11,16 @@ export const dynamic = 'force-dynamic';
  * 검수자가 이 메모를 먼저 보면 검수 시간이 절반으로 줄기 때문이다. (기획서 16.1)
  */
 export async function POST(req: Request) {
-  const { applicationId } = (await req.json()) as { applicationId: number };
-  const app = getApplication(applicationId);
-  if (!app) return NextResponse.json({ ok: false, message: '지원서를 찾을 수 없습니다.' }, { status: 404 });
+  const guard = await guardApi();
+  if (isFail(guard)) return guard.response;
 
-  const company = getCompany(app.company_id)!;
+  const { applicationId } = (await req.json()) as { applicationId: number };
+  const app = getApplicationOwned(Number(applicationId), guard.user.id);
+  if (!app) return NextResponse.json({ ok: false, message: '찾을 수 없습니다.' }, { status: 404 });
+
+  const company = getCompanyOwned(app.company_id, guard.user.id)!;
   const program = getProgram(app.program_id)!;
-  const view = loadApplicationView(applicationId, company, program);
+  const view = loadApplicationView(app.id, company, program);
 
   const failed = view.judge.criteria.flatMap((c) =>
     c.checks.filter((k) => !k.passed).map((k) => `- [${c.label}] ${k.label}`),
@@ -50,6 +54,6 @@ export async function POST(req: Request) {
     if (d !== 0 && d !== 6) added++;
   }
 
-  const id = requestExpertReview(applicationId, memo, due.toISOString().slice(0, 10));
+  const id = requestExpertReview(app.id, memo, due.toISOString().slice(0, 10));
   return NextResponse.json({ ok: true, reviewId: id, dueAt: due.toISOString().slice(0, 10) });
 }
