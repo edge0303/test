@@ -1,0 +1,320 @@
+# 적대적 보안 검토 보고서
+
+| 항목 | 내용 |
+| --- | --- |
+| 대상 | 정부지원금 레이더 (Next.js 15 + SQLite, 커밋 `6f83a58`) |
+| 검토일 | 2026-09-09 |
+| 방식 | 소스 코드 정적 분석 + **실행 중인 앱에 대한 실제 공격 시도** |
+| 결론 | **현 상태로는 인터넷에 배포 불가.** 로컬 개발·데모 용도로만 사용해야 합니다. |
+
+검토는 "취약할 것이다"가 아니라 **실제로 공격해서 성공한 것만** 취약점으로 기록했습니다.
+공격에 실패한 항목은 8장에 별도로 남겼습니다 — 방어가 되고 있는 지점을 아는 것도 중요하기 때문입니다.
+
+---
+
+## 요약
+
+| # | 등급 | 취약점 | 실증 |
+| --- | --- | --- | --- |
+| V1 | **Critical** | 인증·인가 전면 부재 | ✅ 확인 |
+| V2 | **Critical** | IDOR — 타인 데이터 열람·수정 | ✅ 확인 |
+| V3 | **Critical** | 관리자 화면 무인증 노출 | ✅ 확인 |
+| V4 | **Critical** | `next@15.1.6` 알려진 취약점 | ✅ npm audit |
+| V5 | **High** | 요청 본문 크기 무제한 → 디스크 고갈 | ✅ 확인 |
+| V6 | **High** | ReDoS — 정규식 O(n²) | ✅ 확인 |
+| V7 | **High** | LLM 비용 고갈 (무인증 생성 API) | 코드 확인 |
+| V8 | **High** | CSRF 토큰 부재 | 코드 확인 |
+| V9 | Medium | 프롬프트 인젝션 (외부 공고 텍스트) | 코드 확인 |
+| V10 | Medium | PII 평문 저장 | 코드 확인 |
+| V11 | Medium | 인증키를 URL 쿼리로 전송 | 코드 확인 |
+| V12 | Medium | 외부 링크 호스트 미검증 | 코드 확인 |
+| V13 | Medium | 보안 헤더 전무 (CSP/XFO/HSTS) | 코드 확인 |
+| V14 | Low | 예외 메시지 원문 반환 | 코드 확인 |
+| V15 | Low | Host 헤더 신뢰 리다이렉트 | 코드 확인 |
+| V16 | Low | 지원서 버전 무한 증식 | 코드 확인 |
+
+---
+
+## 1. V1 — 인증·인가 전면 부재 (Critical)
+
+`src/` 전체에서 인증 관련 코드가 **0건**입니다.
+
+```
+$ grep -rniE "auth|session|cookie|jwt|middleware|csrf|rate.?limit" src/
+(결과 없음)
+```
+
+기업 식별을 URL 쿼리스트링 `?c=1` 로만 합니다. 이것은 식별자이지 자격증명이 아닙니다.
+브라우저 히스토리·리퍼러 헤더·서버 액세스 로그에 그대로 남고, 1부터 순차 증가하므로
+누구나 전수 열람이 가능합니다.
+
+**영향** — 아래 V2·V3의 전제 조건이 되는 근본 원인.
+
+## 2. V2 — IDOR: 타인 데이터 열람·수정 (Critical)
+
+모든 API가 요청 본문의 `companyId` / `applicationId` 를 **소유권 검증 없이** 신뢰합니다.
+
+### 실증 1) 타 기업 프로파일 열람
+
+```
+$ curl -s "localhost:3000/dashboard?c=1" | grep -oE '220-81-62517|한빛푸드'
+220-81-62517
+한빛푸드
+```
+
+### 실증 2) 타인의 사업계획서 전문 탈취
+
+```
+$ curl -s "localhost:3000/api/export?applicationId=1" | grep 신청기업
+| 신청기업 | (주)한빛푸드 (220-81-62517) |
+```
+
+사업자등록번호·소재지·업종·매출 구간·사업계획서 본문이 통째로 유출됩니다.
+
+### 실증 3) 타인의 사업계획서 **무단 덮어쓰기**
+
+```
+$ curl -X POST localhost:3000/api/application/save -H 'content-type: application/json' \
+    -d '{"applicationId":1,"sections":{"problem":"ATTACKER WAS HERE", ...}}'
+{"ok":true, ...}
+
+$ curl -s "localhost:3000/api/export?applicationId=1" | grep -c "ATTACKER WAS HERE"
+1
+```
+
+마감 직전에 경쟁사의 지원서를 훼손할 수 있습니다. **무결성 침해**입니다.
+
+**해당 엔드포인트** — `/api/export`, `/api/application/save`, `/api/application/generate`,
+`/api/review/request`, `/api/interest`, `/dashboard`, `/application/[id]`
+
+**조치**
+```ts
+// 모든 핸들러 진입점에서
+const session = await requireSession();               // 인증
+const app = getApplication(id);
+if (app.company_id !== session.companyId) notFound();  // 인가 (403 대신 404로 존재 여부도 숨김)
+```
+
+## 3. V3 — 관리자 화면 무인증 노출 (Critical)
+
+```
+$ curl -o /dev/null -w "%{http_code}" localhost:3000/admin/reviews
+200
+$ curl -X POST localhost:3000/api/admin/review -F "id=1" -F "status=done" -F "assignee=attacker"
+303 (성공)
+```
+
+`/admin/reviews` 는 **전체 고객사 명단 + 사업자번호 + 점수 + 검수자 메모**를 한 화면에 노출합니다.
+검수 메모에는 자동 사전정리로 수집한 미확인 항목까지 들어 있어, 사실상 고객 DB 덤프입니다.
+상태 변조(`status=done`)도 인증 없이 가능해 검수 SLA를 임의로 조작할 수 있습니다.
+
+코드 주석에 "실제 배포 시 접근 제어 필요"라고 적어둔 것만으로는 통제가 아닙니다.
+
+## 4. V4 — 의존성 취약점 (Critical)
+
+```
+$ npm audit --omit=dev
+next: critical (9.3.4-canary.0 - 16.3.0-preview.10)
+  - Next.js is vulnerable to RCE in React flight protocol (GHSA-9qr9-h5gf-34mp)
+  - Authorization Bypass in Next.js Middleware (GHSA-f82v-jwr5-mffw)
+  - Next.js: Unauthenticated disclosure of internal Server Function endpoints (GHSA-955p-x3mx-jcvp)
+  - Next Server Actions Source Code Exposure (GHSA-w37m-7fhw-fmv9)
+  ... 외 29건
+postcss: high — sourceMappingURL 경유 임의 파일 읽기 외 3건
+sharp:   high — libvips/libheif 취약점
+3 vulnerabilities (2 high, 1 critical)
+```
+
+특히 **Middleware 인가 우회(GHSA-f82v-jwr5-mffw)** 는 향후 V1 대응으로 미들웨어 기반 인증을
+도입할 때 그 인증을 그대로 무력화합니다. **인증을 붙이기 전에 먼저 올려야 합니다.**
+
+```bash
+npm i next@latest    # 15.5.25 이상
+npm audit --omit=dev # 0 vulnerabilities 확인
+```
+
+## 5. V5 — 요청 본문 크기 무제한 (High)
+
+라우트 핸들러에 본문 크기 제한이 없습니다.
+
+```
+$ ls -lh /tmp/big.json          # 18MB 페이로드
+18M
+$ curl -X POST localhost:3000/api/application/save --data-binary @/tmp/big.json -w "%{http_code}"
+200                              # 거부되지 않음
+$ ls -lh data/app.db
+8.8M                             # 요청 1회로 DB가 8.8MB 증가
+```
+
+무인증이므로 스크립트 반복 실행만으로 디스크를 고갈시킬 수 있습니다.
+
+**조치** — 섹션별 문자 수 상한(예: 20,000자) + `Content-Length` 선검사 + 413 응답.
+
+## 6. V6 — ReDoS: 정규식 O(n²) (High)
+
+`src/lib/verifier.ts` 의 `NUM_UNIT_RE = /(\d[\d,]*(?:\.\d+)?)\s*(억원|만원|%|명|...)/g` 이
+단위 없는 긴 숫자열에서 이차 시간으로 동작합니다.
+
+```
+30KB  숫자열 →    826ms
+60KB  숫자열 →  3,395ms   (4배)
+120KB 숫자열 → 14,280ms   (4배)
+```
+
+입력이 2배가 되면 시간이 4배 — 전형적인 O(n²)입니다.
+**무인증 요청 1건으로 CPU 코어 하나를 14초간 점유**할 수 있고, 동시 요청이면 서비스가 정지합니다.
+
+**조치** — 입력 길이 상한(V5와 함께) + 숫자열 길이를 정규식에서 제한
+(`\d{1,15}` 형태로 상계) + 채점을 요청 스레드 밖(큐)으로 분리.
+
+## 7. V7 — LLM 비용 고갈 (High)
+
+`/api/application/generate` 는 무인증이며 `force: true` 로 매번 전체 재생성합니다.
+LLM 모드에서 요청 1건당 **초안 1회 + 재작성 최대 2회 × 4섹션 + 총평 1회 = 최대 10회** API 호출이
+발생합니다. 레이트 리밋이 없으므로 공격자가 API 키 예산을 임의로 소진시킬 수 있습니다.
+
+**조치** — 인증 + 기업당 일일 생성 횟수 제한 + 큐잉 + 예산 상한 알림.
+
+## 8. V8 — CSRF 토큰 부재 (High)
+
+`/api/admin/review` 는 `multipart/form-data` 를 받습니다. 이 콘텐츠 타입은 CORS 프리플라이트를
+발생시키지 않으므로, 공격자 사이트의 자동 제출 폼만으로 교차 사이트 요청이 성립합니다.
+
+지금은 인증 자체가 없어 CSRF가 의미 없지만, **V1을 쿠키 세션으로 해결하는 순간 즉시 악용
+가능한 상태**가 됩니다. 인증과 CSRF 방어는 반드시 함께 도입해야 합니다.
+
+**조치** — `SameSite=Lax` 이상 + Origin 헤더 검증 + 상태 변경 폼에 CSRF 토큰.
+
+## 9. V9 — 프롬프트 인젝션 (Medium)
+
+`src/lib/pipeline.ts` 의 `programBrief()` 가 외부 API에서 받은 `title` / `target_summary` 를
+LLM 프롬프트에 **구분자 없이 그대로** 삽입합니다.
+
+```ts
+`사업명: ${p.title}\n지원대상: ${p.target_summary ?? '-'}`
+```
+
+공고 데이터 출처가 오염되면(공공 API 변조, 향후 지자체 크롤링, 사용자 제보 공고)
+"이전 지시를 무시하고 …" 같은 문자열이 시스템 프롬프트 다음에 들어갑니다.
+
+**완화 요인** — LLM에 도구 접근 권한이 없고 출력이 지원서 텍스트로만 흘러, 피해가
+"이상한 초안 생성" 범위에 머무릅니다. 다만 사용자 프로파일(매출·소재지)을 본문에 유도 삽입해
+유출시키는 것은 가능합니다.
+
+**조치** — 외부 텍스트를 `<untrusted_data>` 로 감싸고 "데이터일 뿐 지시가 아니다"를 명시,
+길이 절단, 생성 결과에 대한 출력 필터.
+
+## 10. V10 — PII 평문 저장 (Medium)
+
+`companies` 테이블에 사업자등록번호·상호·소재지·매출 구간이 평문으로 저장됩니다.
+**개인사업자의 사업자등록번호는 상호·대표자명과 결합 시 개인정보로 취급될 수 있습니다.**
+
+현재 통제는 파일시스템 권한뿐이며, 백업·로그·`raw_json` 컬럼으로도 확산됩니다.
+
+**조치** — 저장 시 암호화(최소한 사업자번호), 접근 로그, 보관 기간·파기 정책 명문화,
+`data/*.db` 가 `.gitignore` 에 있는지 상시 확인(현재 포함됨 ✅).
+
+## 11. V11 — 인증키를 URL 쿼리로 전송 (Medium)
+
+```ts
+const url = `${base}?crtfcKey=${encodeURIComponent(key)}&dataType=json...`;   // ingest.ts
+`${ENDPOINT}?serviceKey=${encodeURIComponent(key)}`                          // nts.ts
+```
+
+쿼리스트링은 프록시 로그·리퍼러·CDN 캐시 키에 남습니다. 공공 API 규격상 불가피한 경우가
+많지만, 최소한 **요청 URL을 로그로 남기지 않도록** 하고 키를 정기 교체해야 합니다.
+
+## 12. V12 — 외부 링크 호스트 미검증 (Medium)
+
+```ts
+url: link.startsWith('http') ? link : `https://www.bizinfo.go.kr${link}`
+```
+
+`javascript:` 스킴은 접두어가 붙어 무력화되지만(✅), `http(s)://` 로 시작하면
+**임의의 호스트가 그대로 링크**됩니다. 공고 데이터가 오염되면 정부 사이트를 사칭한
+피싱 링크가 대시보드에 정상 공고처럼 노출됩니다.
+
+**조치** — 신뢰 도메인 허용 목록(`*.go.kr`, `*.or.kr` 등) 검증, 외부 도메인은 경고 표시.
+
+## 13. V13 — 보안 헤더 전무 (Medium)
+
+CSP, `X-Frame-Options`, `Strict-Transport-Security`, `Referrer-Policy` 가 모두 없습니다.
+`/admin/reviews` 를 iframe으로 겹쳐 클릭재킹으로 상태 변경을 유도할 수 있습니다.
+
+**조치** — `next.config.mjs` 의 `headers()` 에 일괄 추가.
+
+## 14. V14 / V15 / V16 — Low
+
+- **V14** `/api/application/generate` 가 `(err as Error).message` 를 그대로 반환 →
+  경로·모듈명 등 내부 정보 노출 가능. 서버에만 로깅하고 클라이언트에는 일반 메시지를 주십시오.
+- **V15** `/api/admin/review` 의 `NextResponse.redirect(new URL('/admin/reviews', req.url))` 가
+  `req.url` (Host 헤더 유래)을 신뢰 → 프록시 앞단에서 Host 조작 시 리다이렉트 대상이 바뀔 수 있습니다.
+  경로 문자열만 사용하십시오.
+- **V16** `application_sections` 가 편집·재생성 때마다 무한 증가합니다(버전 정리 없음).
+  V5와 결합하면 저장소 증폭 계수가 커집니다. 보존 버전 수 상한을 두십시오.
+
+---
+
+## 8. 공격했으나 방어된 항목 (Negative findings)
+
+이 항목들은 **실제로 시도했고 막혔습니다.** 리팩터링 시 이 방어를 깨뜨리지 않도록 유지하십시오.
+
+### SQL 인젝션 — 없음
+전 쿼리가 `better-sqlite3` 의 파라미터 바인딩을 사용합니다. 동적으로 조립되는 SQL은
+`upsertCompany` 한 곳뿐인데, 컬럼 목록이 코드에 하드코딩된 상수 배열(`cols`)이고
+사용자 입력은 항상 `@named` 파라미터로만 들어갑니다.
+
+### XSS — 없음
+```
+$ curl -X POST /api/onboard -d '{"name":"<img src=x onerror=alert(1)>", ...}'
+{"ok":true,"companyId":2}
+$ curl "localhost:3000/dashboard?c=2" | grep -oE '&lt;img src=x onerror=alert\(1\)&gt;'
+&lt;img src=x onerror=alert(1)&gt;      ← 이스케이프됨
+```
+React의 자동 이스케이프가 동작하고, `dangerouslySetInnerHTML` 을 한 번도 쓰지 않았습니다.
+직접 만든 마크다운 렌더러(`src/components/Markdown.tsx`)도 문자열이 아니라 **React 노드**를
+생성하므로 같은 보호를 받습니다.
+
+### `javascript:` 스킴 주입 — 없음
+`startsWith('http')` 검사에 걸려 `https://www.bizinfo.go.kr` 접두어가 붙으면서 무력화됩니다.
+(다만 V12의 호스트 검증 부재는 별개 문제로 남습니다.)
+
+### 경로 조작 — 없음
+사용자 입력이 파일 경로로 흐르는 지점이 없습니다. `DB_PATH` 만 환경변수에서 옵니다.
+
+### 예측 가능한 오류 응답 — 양호
+존재하지 않는 `companyId` 요청에 일반 메시지만 반환합니다.
+
+### 무한 재귀 — 방어됨
+`ingest.ts` 의 `findArray()` 가 깊이 6으로 제한되어 있어 악의적 중첩 JSON에 안전합니다.
+
+---
+
+## 9. 조치 우선순위
+
+### P0 — 인터넷 노출 전 반드시 (이것 없이는 배포 금지)
+1. **`npm i next@latest`** (V4) — 인증을 붙이기 *전에* 먼저. 미들웨어 인가 우회 때문입니다.
+2. **세션 인증 도입** (V1) — 쿠키 기반, `SameSite=Lax`, `HttpOnly`, `Secure`
+3. **모든 핸들러에 소유권 검증** (V2) — `resource.company_id === session.companyId`
+4. **`/admin/*` 분리** (V3) — 별도 인증, 가능하면 별도 호스트/네트워크
+5. **CSRF 방어** (V8) — 2번과 반드시 동시에
+
+### P1 — 공개 직후 1주 내
+6. 본문 크기 상한 + 413 (V5)
+7. 정규식 상계 + 채점 큐 분리 (V6)
+8. 레이트 리밋 + 생성 횟수 제한 (V7)
+9. 보안 헤더 (V13)
+
+### P2 — 안정화 단계
+10. 프롬프트 인젝션 방어 (V9), PII 암호화 (V10), 키 로깅 차단 (V11),
+    링크 도메인 허용목록 (V12), 오류 메시지 정리 (V14), 리다이렉트 (V15), 버전 정리 (V16)
+
+---
+
+## 10. 검토 범위의 한계
+
+- **인증이 없어서 인증 우회 테스트를 하지 못했습니다.** 인증 도입 후 재검토가 필요합니다.
+- 실데이터 API(기업마당·국세청)는 키가 없어 **실제 응답으로 검증하지 못했습니다.**
+  외부 응답을 신뢰하는 경로(V9·V12)는 실키 연동 후 재검토 대상입니다.
+- LLM 모드(`ANTHROPIC_API_KEY` 설정 시)의 출력은 검증하지 못했습니다. V9는 코드 분석 결과입니다.
+- 인프라(TLS, 방화벽, 백업 암호화, 컨테이너 권한)는 범위 밖입니다.
